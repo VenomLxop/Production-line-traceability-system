@@ -1,9 +1,11 @@
 """Pack station simulator.
 
-Subscribes to the Test station's topic and publishes a Pack-station event
-for each unit that reaches it. Since ~4% of units never get a Test event
-(see stations/test.py), those units also never reach Pack -- which is
-exactly the kind of gap the integrity layer is designed to detect.
+Subscribes to the Test station's "advance" signal (published for every
+unit that physically leaves Test, whether or not its scan event survived
+-- see stations/test.py) and publishes a Pack-station event for each one.
+This means a unit whose Test scan was dropped still reaches Pack, so it
+shows up in the data as "has Assembly and Pack, missing Test" -- exactly
+the kind of gap the integrity layer is designed to detect.
 
 Run: python -m stations.pack
 """
@@ -11,7 +13,7 @@ import json
 import random
 import time
 
-from traceability.config import TOPIC_PACK, TOPIC_TEST
+from traceability.config import TOPIC_PACK, TOPIC_TEST_ADVANCE
 from stations.common import build_event, make_client, publish_event
 
 processed_count = 0
@@ -34,7 +36,7 @@ def on_message(client, userdata, msg):
 def run() -> None:
     client = make_client("station-pack")
     client.on_message = on_message
-    client.subscribe(TOPIC_TEST, qos=1)
+    client.subscribe(TOPIC_TEST_ADVANCE, qos=1)
 
     print("[pack] station online, listening for units from test...")
     try:

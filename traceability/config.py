@@ -12,9 +12,19 @@ MQTT_PORT = int(os.environ.get("MQTT_PORT", "1883"))
 
 # Topics form a chain: assembly -> test -> pack. Each station simulator
 # subscribes to the previous station's topic (its "unit arrived" signal)
-# and publishes to its own topic when it finishes processing a unit.
+# and publishes to its own "*/events" topic when it finishes processing a
+# unit -- these events topics are what the ingest service records.
+#
+# TOPIC_TEST_ADVANCE is separate on purpose: a physical unit still moves
+# on to Pack even if its Test scan event is dropped (a flaky sensor loses
+# the *data point*, it doesn't stop the conveyor). So Pack subscribes to
+# this always-published "unit physically left Test" signal rather than to
+# TOPIC_TEST itself -- otherwise a dropped Test scan would also silently
+# swallow the unit's Pack scan, and the integrity layer would never see
+# the gap it's meant to catch.
 TOPIC_ASSEMBLY = "line/assembly/events"
 TOPIC_TEST = "line/test/events"
+TOPIC_TEST_ADVANCE = "line/test/advance"
 TOPIC_PACK = "line/pack/events"
 TOPIC_ALL_EVENTS = "line/+/events"
 
