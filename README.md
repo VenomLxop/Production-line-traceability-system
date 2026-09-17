@@ -108,6 +108,12 @@ python -m recall.query batch BATCH-003
 streamlit run dashboard/app.py
 ```
 
+Once it's running, open it at **[http://localhost:8501](http://localhost:8501)**
+(Streamlit's default port). This link only resolves while the dashboard is
+running on your own machine -- it isn't hosted anywhere, so it won't work
+from someone else's browser or straight off GitHub without running the
+command above first.
+
 ## Post-mortem: the 4% Test-station scan loss
 
 **What broke.** During the first full end-to-end run of the line (200
