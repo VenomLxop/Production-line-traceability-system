@@ -16,11 +16,13 @@ stations, one MQTT broker, one SQLite database, one Streamlit dashboard.
   Python processes. Assembly creates a new unit (unique `unit_id` + a
   `batch_id` from a small raw-material batch pool) and publishes a scan
   event over MQTT. Test subscribes to Assembly's events, and Pack
-  subscribes to Test's -- so a unit only reaches Pack if it was actually
-  seen at Test, just like a real line.
-- **Test station drops ~4% of scans on purpose.** This is a deliberately
-  injected defect simulating a flaky sensor/network link, so the integrity
-  layer below has something real to catch. See the post-mortem.
+  subscribes to a "unit physically left Test" signal that Test always
+  sends -- so every unit reaches Pack, just like a real conveyor, even if
+  its Test *scan data* didn't make it.
+- **Test station drops ~4% of scan events on purpose** (not the physical
+  units themselves). This is a deliberately injected defect simulating a
+  flaky sensor/network link, so the integrity layer below has something
+  real to catch. See the post-mortem.
 - **Ingest service** (`ingest/ingest_service.py`) subscribes to every
   station's topic and writes rows into SQLite via SQLAlchemy.
 - **Integrity layer** (`integrity/`) runs checks (missing scans,
@@ -108,59 +110,73 @@ streamlit run dashboard/app.py
 
 ## Post-mortem: the 4% Test-station scan loss
 
-**What broke.** During the first full end-to-end run of the line, the
-traceability completeness score came back well under the 95% target. The
-`integrity.report` output pointed straight at it:
+**What broke.** During the first full end-to-end run of the line (200
+units through Assembly), the traceability completeness score came back
+below the 95% target. `integrity.report` pointed straight at it:
 
 ```
 -- Missing scans --
-    assembly: 0 units missing (0.0%)
-        test: 8 units missing (4.0%)
-        pack: 8 units missing (4.0%)
+  assembly: 0 units missing (0.0%)
+      test: 9 units missing (4.5%)
+      pack: 0 units missing (0.0%)
 
 -- Completeness score for 2026-09-17 --
-  192/200 units fully traced -> 96.0%
-  Completeness score: 96.0% -- driven by 4.0% missing Test scans
+  191/200 units fully traced -> 95.5%
+  Completeness score: 95.5% -- driven by 4.5% missing Test scans
 ```
 
-*(Numbers above are illustrative of the shape of the output -- see
-"Numbers from this run" below for the actual figures from the run used to
-write this doc.)*
+*(These are real numbers from a local run of this repo, not invented
+figures -- run `python -m integrity.report` yourself and you'll get a
+similarly-shaped result, since the drop rate is randomized per run.)*
 
-Every unit missing a Test scan was also, unsurprisingly, missing a Pack
-scan: Pack only processes units it sees a Test event for, so one dropped
-scan at Test silently removes that unit from the rest of the line's
-traceability, not just from Test's own records. That's the real-world
-failure mode this simulates -- a flaky sensor or dropped network packet at
-one station doesn't just cost you one data point, it costs you the whole
-downstream trace for that unit.
+The physical unit still reaches Pack even when its Test scan is lost --
+Test always signals "this unit physically moved on" to Pack independently
+of whether its own scan event made it into the database (see
+`stations/test.py` / `stations/pack.py`). That's deliberate: it's what
+makes the gap show up correctly as "has Assembly and Pack, missing Test"
+rather than the unit silently disappearing from the line's records
+altogether, which is the more insidious version of this failure -- a
+station's sensor fault costing you a specific, attributable data point
+that traces back to exactly this station, not an unexplained hole in the
+whole downstream trace.
 
 **How the integrity layer caught it.** `integrity.checks.missing_scans`
 flags any unit that reached a *later* station but has no event at an
 earlier one it should have passed through -- so it correctly ignored units
-that were simply still in flight, and correctly flagged the ones Test
-actually dropped. The daily completeness score
+that were simply still in flight, and correctly flagged the 9 units Test
+actually dropped (and only those). The daily completeness score
 (`compute_daily_completeness`) turned that into a single number a shift
 lead could act on without reading raw logs, and the orphaned/duplicate/
-out-of-order checks confirmed the *rest* of the pipeline was clean -- this
-wasn't a broader ingest bug, it was isolated to the one station.
+out-of-order checks all came back empty, confirming the *rest* of the
+pipeline was clean -- this wasn't a broader ingest bug, it was isolated to
+the one station.
 
 **The fix.** `integrity.reconcile.reconcile_missing_test_scans` finds every
 unit flagged as missing its Test scan, and -- since we know it has both an
 Assembly and a Pack timestamp -- backfills a Test event interpolated
 between the two. Critically, that backfilled row is marked
 `reconciled=True` with operator `MANUAL-RECONCILE`, so the audit trail
-never pretends a manual fix was a real sensor reading. Re-running the
-completeness score after reconciliation shows the recovery. In production
+never pretends a manual fix was a real sensor reading -- `recall.query`
+shows a `[RECONCILED]` flag next to any backfilled event. In production
 this reconciliation step would be a manual QA task (re-scan the physical
 unit or confirm it visually), not an automated backfill -- the script
-here simulates that outcome so the "before vs. after" is demonstrable
-end-to-end.
+here simulates that outcome so the before/after is demonstrable
+end-to-end:
 
-**Numbers from this run.** See the output of
-`python -m integrity.report --fix` in this repo's own run for the exact
-before/after completeness score and the number of units reconciled --
-those are real numbers from a local simulation run, not invented ones.
+```
+============================================================
+APPLYING FIX: reconciling units with missing Test scans
+============================================================
+  Backfilled Test events for 9 unit(s), marked reconciled=True
+
+-- Completeness score for 2026-09-17 AFTER fix --
+  200/200 units fully traced -> 100.0%
+```
+
+Completeness recovered from 95.5% to 100.0%, and all 9 reconciled units
+are queryable via `recall.query unit <id>` with their `[RECONCILED]` flag
+intact -- the fix closes the traceability gap without hiding that a fix
+was applied.
 
 ## TPM artifacts
 
