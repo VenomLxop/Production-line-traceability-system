@@ -4,6 +4,7 @@ __pycache__/
 venv/
 *.db
 *.db-journal
+!dashboard/demo_data.db
 .streamlit/
 .DS_Store
 logs/

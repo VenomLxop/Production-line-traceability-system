@@ -5,22 +5,49 @@ the traceability completeness score over time (with a red/yellow/green
 alert banner), and a recall-query search box.
 
 Run: streamlit run dashboard/app.py
+
+If you haven't run the local simulation (no `traceability.db` in the repo
+root), this falls back to the bundled `dashboard/demo_data.db` -- a real
+dataset from a past local run -- so the dashboard has something to show
+out of the box, e.g. on a fresh Streamlit Community Cloud deploy where
+there's no MQTT broker or station processes running behind it.
 """
+import os
+from pathlib import Path
+
 import pandas as pd
 import streamlit as st
+from sqlalchemy import create_engine
+from sqlalchemy.orm import sessionmaker
 
-from traceability.config import COMPLETENESS_TARGET
-from traceability.db import SessionLocal, init_db
-from traceability.models import DailyScore, StationEvent, Unit
+from traceability.config import COMPLETENESS_TARGET, DB_URL
+from traceability.models import Base, DailyScore, StationEvent, Unit
 from recall.query import get_unit_trace, get_units_by_batch
 
 st.set_page_config(page_title="Line Traceability Dashboard", layout="wide")
 
+DEMO_DB_PATH = Path(__file__).parent / "demo_data.db"
+
+
+def _resolve_db_url() -> str:
+    """Prefer an explicit DB_URL env var, then a local traceability.db
+    from running the real pipeline, then the bundled demo dataset."""
+    if os.environ.get("DB_URL"):
+        return os.environ["DB_URL"]
+    if Path("traceability.db").exists():
+        return DB_URL
+    if DEMO_DB_PATH.exists():
+        return f"sqlite:///{DEMO_DB_PATH}"
+    return DB_URL
+
 
 @st.cache_resource
 def get_session():
-    init_db()
-    return SessionLocal()
+    resolved_url = _resolve_db_url()
+    connect_args = {"check_same_thread": False} if resolved_url.startswith("sqlite") else {}
+    engine = create_engine(resolved_url, connect_args=connect_args)
+    Base.metadata.create_all(engine)
+    return sessionmaker(bind=engine, expire_on_commit=False)()
 
 
 def load_events_df(session) -> pd.DataFrame:
@@ -65,6 +92,12 @@ def render_banner(latest_score: float | None) -> None:
 
 def main() -> None:
     st.title("Production Line Traceability Dashboard")
+
+    if not Path("traceability.db").exists() and DEMO_DB_PATH.exists():
+        st.caption(
+            "📦 Showing bundled demo data from a past local simulation run "
+            "(no live `traceability.db` found in this environment)."
+        )
 
     session = get_session()
     events_df = load_events_df(session)
